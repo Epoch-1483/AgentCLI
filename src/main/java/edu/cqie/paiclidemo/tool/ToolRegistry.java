@@ -5,6 +5,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import edu.cqie.paiclidemo.llm.LlmClient;
+import edu.cqie.paiclidemo.rag.CodeRetriever;
+import edu.cqie.paiclidemo.rag.SearchResultFormatter;
+import edu.cqie.paiclidemo.rag.VectorStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,6 +34,14 @@ public class ToolRegistry {
     /** 已注册的工具表：name → Tool */
     private final Map<String, Tool> tools = new ConcurrentHashMap<>();
 
+    /**
+     * 当前索引的项目路径（供 RAG search_code 工具使用）。
+     * <p>
+     * 当用户执行 /index 命令后，Main 会调用 setProjectPath() 同步路径，
+     * 确保 search_code 工具始终在正确的项目目录下检索。
+     */
+    private volatile String projectPath = ".";
+
     // ==================== 工具注册 ====================
 
     /**
@@ -49,6 +60,67 @@ public class ToolRegistry {
     /** 是否已注册指定工具 */
     public boolean hasTool(String name) {
         return tools.containsKey(name);
+    }
+
+    /** 设置当前项目路径（/index 命令执行后同步） */
+    public void setProjectPath(String projectPath) {
+        this.projectPath = projectPath;
+        log.info("RAG 项目路径已同步: {}", projectPath);
+    }
+
+    /** 获取当前项目路径 */
+    public String getProjectPath() {
+        return projectPath;
+    }
+
+    // ==================== RAG 工具注册 ====================
+
+    /**
+     * 注册 RAG 相关工具（search_code）。
+     * <p>
+     * 在 createToolRegistry() 中调用，让 Agent 可以调用 search_code 工具
+     * 对已索引的代码库进行语义检索。
+     */
+    public void registerRagTools() {
+        register(
+                "search_code",
+                "RAG 语义辅助检索代码库，根据自然语言描述查找相关代码块。"
+                        + "精确符号/字符串定位请优先用其他工具；"
+                        + "默认 top_k=5，可显式指定（上限 30）",
+                createParameters(
+                        new Param("query", "string", "自然语言查询描述，例如 'Agent 的 run 方法怎么实现'"),
+                        new Param("top_k", "string", "返回结果数量，默认 5，最大 30", false)
+                ),
+                args -> {
+                    String query = args.get("query");
+                    if (query == null || query.isBlank()) {
+                        return "错误：请提供查询内容（query 参数）";
+                    }
+                    int topK = 5;
+                    String topKStr = args.get("top_k");
+                    if (topKStr != null && !topKStr.isBlank()) {
+                        try {
+                            topK = Math.min(Integer.parseInt(topKStr), 30);
+                        } catch (NumberFormatException ignored) {
+                            // 解析失败则使用默认值 5
+                        }
+                    }
+                    try (CodeRetriever retriever = new CodeRetriever(projectPath)) {
+                        VectorStore.IndexStats stats = retriever.getStats();
+                        if (stats.chunkCount() == 0) {
+                            return "代码库尚未索引，请先执行 /index 命令建立索引。";
+                        }
+                        var results = retriever.hybridSearch(query, topK);
+                        if (results.isEmpty()) {
+                            return "未找到与 \"" + query + "\" 相关的代码块。";
+                        }
+                        return SearchResultFormatter.formatForTool(query, results);
+                    } catch (Exception e) {
+                        log.error("search_code 执行失败", e);
+                        return "检索出错: " + e.getMessage();
+                    }
+                }
+        );
     }
 
     // ==================== 工具执行 ====================

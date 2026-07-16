@@ -2,16 +2,23 @@ package edu.cqie.paiclidemo.cli;
 
 import edu.cqie.paiclidemo.agent.Agent;
 import edu.cqie.paiclidemo.agent.PlanExecuteAgent;
+import edu.cqie.paiclidemo.config.DotEnv;
 import edu.cqie.paiclidemo.llm.GLMClient;
 import edu.cqie.paiclidemo.llm.LlmClient;
 import edu.cqie.paiclidemo.memory.MemoryManager;
+import edu.cqie.paiclidemo.rag.CodeIndex;
+import edu.cqie.paiclidemo.rag.CodeRelation;
+import edu.cqie.paiclidemo.rag.CodeRetriever;
+import edu.cqie.paiclidemo.rag.SearchResultFormatter;
 import edu.cqie.paiclidemo.tool.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Scanner;
 
 import static edu.cqie.paiclidemo.tool.ToolRegistry.Param;
@@ -36,12 +43,13 @@ public class Main {
     private static final Logger log = LoggerFactory.getLogger(Main.class);
 
     public static void main(String[] args) {
-        // ① 读取 API 密钥（从环境变量，避免硬编码）
-        String apiKey = System.getenv("GLM_API_KEY");
+        // ① 读取 API 密钥（优先 .env 文件，也支持环境变量 / JVM 参数）
+        String apiKey = DotEnv.get("GLM_API_KEY", null);
         if (apiKey == null || apiKey.isBlank()) {
-            System.err.println("错误：请设置环境变量 GLM_API_KEY");
-            System.err.println("  Windows:  set GLM_API_KEY=your-key");
-            System.err.println("  Linux/Mac: export GLM_API_KEY=your-key");
+            System.err.println("错误：未找到 GLM_API_KEY 配置");
+            System.err.println("  方式一：在项目根目录创建 .env 文件，写入 GLM_API_KEY=your-key");
+            System.err.println("  方式二：设置环境变量 GLM_API_KEY=your-key");
+            System.err.println("  参考 .env.example 文件");
             return;
         }
 
@@ -61,11 +69,15 @@ public class Main {
         Agent agent = new Agent(llmClient, toolRegistry, memoryManager);           // ReAct 模式（含记忆）
         PlanExecuteAgent planAgent = new PlanExecuteAgent(llmClient, toolRegistry, scanner, memoryManager);  // Plan-and-Execute 模式（含记忆）
 
-        // ⑦ 显示启动横幅 + 进入 REPL 交互循环
+        // ⑦ 检测 RAG 索引状态
+        boolean ragReady = checkRagReady();
+
+        // ⑧ 显示启动横幅 + 进入 REPL 交互循环
         Banner.display(
                 llmClient.getModelName(),
                 toolRegistry.getToolDefinitions().size(),
-                true
+                true,
+                ragReady
         );
 
         while (true) {
@@ -115,6 +127,24 @@ public class Main {
             // /memory 命令 → 记忆管理
             if (input.startsWith("/memory")) {
                 handleMemoryCommand(input, memoryManager);
+                continue;
+            }
+
+            // /index 命令 → 索引代码库（RAG）
+            if (input.startsWith("/index")) {
+                handleIndexCommand(input, toolRegistry);
+                continue;
+            }
+
+            // /search 命令 → 语义检索代码（RAG）
+            if (input.startsWith("/search")) {
+                handleSearchCommand(input, toolRegistry);
+                continue;
+            }
+
+            // /graph 命令 → 查询代码关系图谱（RAG）
+            if (input.startsWith("/graph")) {
+                handleGraphCommand(input, toolRegistry);
                 continue;
             }
 
@@ -223,6 +253,136 @@ public class Main {
         System.out.println("未知命令。可用: /memory status, /memory facts, /memory search <关键词>, /memory extract, /memory clear short|long");
     }
 
+    // ==================== RAG 命令 ====================
+
+    /**
+     * /index [path] → 索引代码库，建立 RAG 向量索引。
+     * <p>
+     * 流程：
+     * 1. 解析路径参数（默认当前目录 "."）
+     * 2. 创建 CodeIndex，进度输出到控制台
+     * 3. 执行索引：遍历文件 → 分块 → 向量化 → 存入 SQLite
+     * 4. 将索引路径同步到 ToolRegistry（确保 search_code 工具使用正确路径）
+     */
+    private static void handleIndexCommand(String input, ToolRegistry toolRegistry) {
+        String indexPath = input.substring(6).trim();
+        if (indexPath.isEmpty()) {
+            indexPath = ".";
+        }
+
+        String absPath = Paths.get(indexPath).toAbsolutePath().normalize().toString();
+        System.out.println("开始索引: " + absPath);
+        System.out.println("─".repeat(50));
+
+        CodeIndex indexer = new CodeIndex(System.out::println);
+        CodeIndex.IndexResult result = indexer.index(indexPath);
+
+        System.out.println("─".repeat(50));
+        System.out.println("结果: " + result.message());
+
+        // 同步路径到 ToolRegistry，让 search_code 工具知道索引的是哪个项目
+        toolRegistry.setProjectPath(absPath);
+        System.out.println("search_code 工具已绑定路径: " + absPath);
+    }
+
+    /**
+     * /search <query> → 语义检索代码库（绕过 Agent，直接查询 RAG）。
+     * <p>
+     * 使用 CodeRetriever.hybridSearch + SearchResultFormatter.formatForCli 输出。
+     */
+    private static void handleSearchCommand(String input, ToolRegistry toolRegistry) {
+        String query = input.substring(7).trim();
+        if (query.isEmpty()) {
+            System.out.println("用法: /search <查询内容>");
+            System.out.println("示例: /search Agent 的 run 方法是怎么实现的");
+            return;
+        }
+
+        try (CodeRetriever retriever = new CodeRetriever(toolRegistry.getProjectPath())) {
+            var stats = retriever.getStats();
+            if (stats.chunkCount() == 0) {
+                System.out.println("代码库尚未索引，请先执行 /index 命令。");
+                return;
+            }
+
+            var results = retriever.hybridSearch(query, 5);
+            if (results.isEmpty()) {
+                System.out.println("未找到与 \"" + query + "\" 相关的代码块。");
+                return;
+            }
+
+            System.out.println("\n" + SearchResultFormatter.formatForCli(query, results));
+        } catch (Exception e) {
+            System.err.println("检索出错: " + e.getMessage());
+            log.error("/search 命令执行失败", e);
+        }
+    }
+
+    /**
+     * /graph <className> → 查询代码关系图谱。
+     * <p>
+     * 从 VectorStore 中查询指定类/方法的关系（extends、implements、contains 等），
+     * 以箭头形式展示。
+     */
+    private static void handleGraphCommand(String input, ToolRegistry toolRegistry) {
+        String className = input.substring(6).trim();
+        if (className.isEmpty()) {
+            System.out.println("用法: /graph <类名或方法名>");
+            System.out.println("示例: /graph Agent");
+            return;
+        }
+
+        try (CodeRetriever retriever = new CodeRetriever(toolRegistry.getProjectPath())) {
+            var stats = retriever.getStats();
+            if (stats.chunkCount() == 0) {
+                System.out.println("代码库尚未索引，请先执行 /index 命令。");
+                return;
+            }
+
+            List<CodeRelation> relations = retriever.getRelationGraph(className);
+            if (relations.isEmpty()) {
+                System.out.println("未找到与 \"" + className + "\" 相关的代码关系。");
+                return;
+            }
+
+            System.out.println("\n📊 代码关系图谱: " + className);
+            System.out.println("─".repeat(50));
+            for (CodeRelation rel : relations) {
+                String arrow = switch (rel.relationType()) {
+                    case "extends" -> "──extends──▶";
+                    case "implements" -> "──implements──▶";
+                    case "contains" -> "──contains──▶";
+                    case "calls" -> "──calls──▶";
+                    case "imports" -> "──imports──▶";
+                    default -> "──" + rel.relationType() + "──▶";
+                };
+                System.out.printf("  %s %s %s%n", rel.fromName(), arrow, rel.toName());
+            }
+            System.out.println("─".repeat(50));
+            System.out.println("共 " + relations.size() + " 条关系");
+        } catch (Exception e) {
+            System.err.println("图谱查询出错: " + e.getMessage());
+            log.error("/graph 命令执行失败", e);
+        }
+    }
+
+    // ==================== RAG 状态检测 ====================
+
+    /**
+     * 启动时检测 RAG 索引是否就绪。
+     * <p>
+     * 尝试打开默认路径的 VectorStore，查询 chunkCount。
+     * 如果数据库不存在或 chunkCount=0，返回 false。
+     */
+    private static boolean checkRagReady() {
+        try (var retriever = new CodeRetriever(".")) {
+            var stats = retriever.getStats();
+            return stats.chunkCount() > 0;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     // ==================== 工具注册 ====================
 
     /**
@@ -270,6 +430,9 @@ public class Main {
                             DateTimeFormatter.ofPattern("yyyy年MM月dd日 HH:mm:ss"));
                 }
         );
+
+        // 工具 3：RAG 语义检索（search_code）
+        registry.registerRagTools();
 
         return registry;
     }

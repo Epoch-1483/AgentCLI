@@ -14,11 +14,11 @@ package edu.cqie.paiclidemo.cli;
  *  │      ██  ██     PaiCLI Demo  v0.1           │
  *  │      ██  ██     智谱 AI 代理                │
  *  │      ██  ██     Model: glm-5-flash          │
- *  │      ██  ██     4 tools · Memory ✓          │
+ *  │      ██  ██     5 tools · Memory ✓ · RAG ✗ │
  *  │                                             │
  *  │  ─────────────────────────────────────────  │
  *  │  输入 quit 退出 · clear 清空 · /plan 规划    │
- *  │  /memory 管理记忆                            │
+ *  │  /memory 管理记忆 · /index /search /graph RAG│
  *  ╰─────────────────────────────────────────────╯
  * </pre>
  *
@@ -67,8 +67,9 @@ public class Banner {
      * @param modelName 当前使用的模型名称（如 "glm-5-flash"）
      * @param toolCount 已注册工具数量
      * @param hasMemory 是否启用了记忆系统
+     * @param ragReady  RAG 索引是否就绪（已有向量数据）
      */
-    public static void display(String modelName, int toolCount, boolean hasMemory) {
+    public static void display(String modelName, int toolCount, boolean hasMemory, boolean ragReady) {
         // 右侧信息面板（与 π 图形的第 1~4 行对齐）
         String[] info = {
                 WHITE + " PaiCLI Demo" + RESET + GRAY + "  v0.1" + RESET,
@@ -76,7 +77,9 @@ public class Banner {
                 GRAY + " Model: " + RESET + WHITE + modelName + RESET,
                 GRAY + " " + toolCount + " tools" + RESET
                         + GRAY + " · Memory " + RESET
-                        + GREEN + (hasMemory ? "✓" : "✗") + RESET,
+                        + GREEN + (hasMemory ? "✓" : "✗") + RESET
+                        + GRAY + " · RAG " + RESET
+                        + GREEN + (ragReady ? "✓" : "✗") + RESET,
         };
 
         // ── 顶部边框 ──
@@ -109,8 +112,8 @@ public class Banner {
         // ── 使用提示 ──
         line("│  " + GRAY + "输入 quit 退出 · clear 清空 · /plan 规划模式"
                 + RESET + " ".repeat(4) + "│");
-        line("│  " + GRAY + "/memory 管理记忆" + RESET
-                + " ".repeat(34) + "│");
+        line("│  " + GRAY + "/memory 管理记忆 · /index /search /graph RAG"
+                + RESET + " ".repeat(5) + "│");
 
         // ── 底部边框 ──
         line("╰" + "─".repeat(50) + "╯");
