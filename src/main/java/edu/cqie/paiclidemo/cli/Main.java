@@ -1,6 +1,7 @@
 package edu.cqie.paiclidemo.cli;
 
 import edu.cqie.paiclidemo.agent.Agent;
+import edu.cqie.paiclidemo.agent.PlanExecuteAgent;
 import edu.cqie.paiclidemo.llm.GLMClient;
 import edu.cqie.paiclidemo.llm.LlmClient;
 import edu.cqie.paiclidemo.tool.ToolRegistry;
@@ -54,14 +55,17 @@ public class Main {
                 .map(LlmClient.Tool::name)
                 .toList());
 
-        // ④ 创建 Agent（ReAct 循环引擎）
-        Agent agent = new Agent(llmClient, toolRegistry);
+        // ④ 创建 Scanner（供 REPL 和 PlanExecuteAgent 共用）
+        Scanner scanner = new Scanner(System.in);
 
-        // ⑤ 进入 REPL 交互循环
-        System.out.println("\n输入你的问题（输入 quit 退出，clear 清空历史）：");
+        // ⑤ 创建 Agent（两种模式）
+        Agent agent = new Agent(llmClient, toolRegistry);           // ReAct 模式
+        PlanExecuteAgent planAgent = new PlanExecuteAgent(llmClient, toolRegistry, scanner);  // Plan-and-Execute 模式（含规划确认）
+
+        // ⑥ 进入 REPL 交互循环
+        System.out.println("\n输入你的问题（输入 quit 退出，clear 清空历史，/plan 进入规划模式）：");
         System.out.println("─".repeat(50));
 
-        Scanner scanner = new Scanner(System.in);
         while (true) {
             System.out.print("\n> ");
             if (!scanner.hasNextLine()) {
@@ -79,6 +83,24 @@ public class Main {
             if ("clear".equalsIgnoreCase(input)) {
                 agent.clearHistory();
                 System.out.println("[对话历史已清空]");
+                continue;
+            }
+
+            // /plan 命令 → Plan-and-Execute 模式
+            if (input.startsWith("/plan")) {
+                String goal = input.substring(5).trim();
+                if (goal.isEmpty()) {
+                    System.out.println("用法: /plan <目标描述>");
+                    System.out.println("示例: /plan 帮我计算 2 的 10 次方然后加上 100");
+                    continue;
+                }
+                try {
+                    String response = planAgent.run(goal);
+                    System.out.println("\n" + response);
+                } catch (Exception e) {
+                    System.err.println("\n规划执行出错: " + e.getMessage());
+                    log.error("PlanExecuteAgent 异常", e);
+                }
                 continue;
             }
 
@@ -159,8 +181,8 @@ public class Main {
         return new ExpressionParser(expr).parse();
     }
 
-    /** 递归下降表达式解析器 */
-    private static class ExpressionParser {
+    /** 递归下降表达式解析器（包级可见，便于单元测试） */
+    static class ExpressionParser {
         private final String input;
         private int pos = 0;
 
