@@ -1,6 +1,8 @@
 package edu.cqie.paiclidemo.agent;
 
 import edu.cqie.paiclidemo.llm.LlmClient;
+import edu.cqie.paiclidemo.memory.ConversationHistoryCompactor;
+import edu.cqie.paiclidemo.memory.MemoryManager;
 import edu.cqie.paiclidemo.tool.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,14 +19,14 @@ import java.util.List;
  *   用户输入 → LLM 思考 → [需要工具?] → 执行工具 → 观察结果 → LLM 继续思考 → ... → 最终回复
  * </pre>
  * <p>
- * 关键设计原则：
- * - LLM 自己决定何时停止（不再调用工具 = 任务完成）
- * - 对话历史作为上下文在每轮迭代中传递
- * - 设置最大迭代次数防止死循环
+ * Memory 集成：
+ * - 可选的 MemoryManager 提供短期记忆（自动压缩）和长期记忆（跨会话持久化）
+ * - ConversationHistoryCompactor 压缩实际的 LLM 消息列表
+ * - 每次 LLM 调用前注入相关长期记忆上下文
  * <p>
  *
  * @author Fonzo
- * @date 2026/07/15
+ * @date 2026/07/16
  */
 public class Agent {
 
@@ -33,23 +35,47 @@ public class Agent {
     /** 安全阈值：最大迭代次数，防止模型陷入死循环 */
     private static final int MAX_ITERATIONS = 10;
 
+    /** 对话历史压缩的 token 触发阈值 */
+    private static final int COMPACT_TRIGGER_TOKENS = 6000;
+
     private final LlmClient llmClient;
     private final ToolRegistry toolRegistry;
+    private final MemoryManager memoryManager;   // 可选，null = 无记忆
+    private final ConversationHistoryCompactor historyCompactor;
 
     /** 对话历史 —— 在整个会话过程中持续累积 */
     private final List<LlmClient.Message> conversationHistory = new ArrayList<>();
 
-    public Agent(LlmClient llmClient, ToolRegistry toolRegistry) {
+    /** 基础系统提示词 */
+    private static final String BASE_SYSTEM_PROMPT =
+            "你是一个智能助手，可以使用提供的工具来帮助用户解决问题。"
+                    + "当你需要获取信息、执行计算或完成特定任务时，请主动使用工具。"
+                    + "每次调用工具后，根据工具返回的结果继续推理，直到得出最终答案。"
+                    + "请用中文回复。";
+
+    /**
+     * 带记忆的构造方法。
+     *
+     * @param llmClient     LLM 客户端
+     * @param toolRegistry  工具注册中心
+     * @param memoryManager 记忆管理器（可选，null = 无记忆功能）
+     */
+    public Agent(LlmClient llmClient, ToolRegistry toolRegistry, MemoryManager memoryManager) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
+        this.memoryManager = memoryManager;
+        this.historyCompactor = memoryManager != null
+                ? new ConversationHistoryCompactor(llmClient) : null;
 
-        // 初始化系统提示词 —— 告诉模型它是一个有工具能力的助手
-        conversationHistory.add(LlmClient.Message.system(
-                "你是一个智能助手，可以使用提供的工具来帮助用户解决问题。"
-                        + "当你需要获取信息、执行计算或完成特定任务时，请主动使用工具。"
-                        + "每次调用工具后，根据工具返回的结果继续推理，直到得出最终答案。"
-                        + "请用中文回复。"
-        ));
+        // 初始化系统提示词
+        rebuildSystemPrompt("");
+    }
+
+    /**
+     * 无记忆的构造方法（向后兼容）。
+     */
+    public Agent(LlmClient llmClient, ToolRegistry toolRegistry) {
+        this(llmClient, toolRegistry, null);
     }
 
     // ==================== 核心方法：ReAct 循环 ====================
@@ -75,6 +101,20 @@ public class Agent {
     public String run(String userInput) throws IOException {
         // ① 将用户消息加入对话历史
         conversationHistory.add(LlmClient.Message.user(userInput));
+
+        // 记忆集成：记录用户消息 + 注入长期记忆上下文
+        if (memoryManager != null) {
+            memoryManager.addUserMessage(userInput);
+
+            // 将相关长期记忆注入 system prompt
+            String memoryContext = memoryManager.buildMemoryContext(userInput, 500);
+            rebuildSystemPrompt(memoryContext);
+
+            // 检查并触发对话历史压缩
+            if (historyCompactor != null) {
+                historyCompactor.compactIfNeeded(conversationHistory, COMPACT_TRIGGER_TOKENS);
+            }
+        }
 
         // 获取工具定义列表（每轮迭代共用）
         List<LlmClient.Tool> toolDefs = toolRegistry.getToolDefinitions();
@@ -116,21 +156,30 @@ public class Agent {
                     log.info("  ← 工具结果: {} chars", result.length());
 
                     // 将工具执行结果作为 tool 消息加入历史
-                    // LLM 在下一轮迭代中会看到这个结果并继续推理
                     conversationHistory.add(LlmClient.Message.tool(
                             toolCall.id(),
                             result
                     ));
+
+                    // 记忆集成：记录工具结果
+                    if (memoryManager != null) {
+                        memoryManager.addToolResult(toolCall.function().name(), result);
+                    }
                 }
 
                 // 继续循环 → 让 LLM 根据工具结果继续推理
-                // （如果工具结果足够，LLM 下一轮就不会再调工具，直接输出最终回复）
 
             } else {
                 // --- 无工具调用 → LLM 认为任务完成，输出最终回复 ---
                 log.info("LLM 输出最终回复（无工具调用）");
 
                 conversationHistory.add(LlmClient.Message.assistant(response.content()));
+
+                // 记忆集成：记录助手回复 + token 使用
+                if (memoryManager != null) {
+                    memoryManager.addAssistantMessage(response.content());
+                    memoryManager.recordTokenUsage(totalInputTokens, totalOutputTokens);
+                }
 
                 log.info("ReAct 循环结束 | 迭代次数: {} | 总 token: in={}, out={}",
                         iteration, totalInputTokens, totalOutputTokens);
@@ -146,20 +195,63 @@ public class Agent {
 
     // ==================== 辅助方法 ====================
 
-    /** 清空对话历史，重新开始新会话 */
+    /**
+     * 清空对话历史，重新开始新会话。
+     * <p>
+     * 如果启用了记忆功能，会先从当前对话中提取关键事实存入长期记忆，
+     * 再清空短期对话历史。这样即使对话被清空，重要的知识仍被保留。
+     */
     public void clearHistory() {
+        // 清空前提取事实到长期记忆
+        if (memoryManager != null) {
+            try {
+                List<String> facts = memoryManager.extractFactsFromConversation();
+                if (!facts.isEmpty()) {
+                    log.info("从对话中提取了 {} 条事实到长期记忆", facts.size());
+                }
+            } catch (Exception e) {
+                log.warn("事实提取失败: {}", e.getMessage());
+            }
+            memoryManager.clearShortTerm();
+        }
+
         conversationHistory.clear();
-        // 重新添加系统提示
-        conversationHistory.add(LlmClient.Message.system(
-                "你是一个智能助手，可以使用提供的工具来帮助用户解决问题。"
-                        + "当你需要获取信息、执行计算或完成特定任务时，请主动使用工具。"
-                        + "每次调用工具后，根据工具返回的结果继续推理，直到得出最终答案。"
-                        + "请用中文回复。"
-        ));
+        rebuildSystemPrompt("");
     }
 
     /** 获取当前对话历史（用于调试） */
     public List<LlmClient.Message> getConversationHistory() {
         return List.copyOf(conversationHistory);
+    }
+
+    /** 获取记忆管理器（用于调试或外部查询） */
+    public MemoryManager getMemoryManager() {
+        return memoryManager;
+    }
+
+    // ==================== 内部方法 ====================
+
+    /**
+     * 重建系统提示词。
+     * <p>
+     * 将基础提示词 + 可选的记忆上下文组装成 system message，
+     * 替换 conversationHistory 中的第一条消息。
+     */
+    private void rebuildSystemPrompt(String memoryContext) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(BASE_SYSTEM_PROMPT);
+
+        if (memoryContext != null && !memoryContext.isBlank()) {
+            sb.append("\n\n").append(memoryContext);
+        }
+
+        LlmClient.Message systemMsg = LlmClient.Message.system(sb.toString());
+
+        if (conversationHistory.isEmpty()) {
+            conversationHistory.add(systemMsg);
+        } else {
+            // 替换第一条 system 消息
+            conversationHistory.set(0, systemMsg);
+        }
     }
 }

@@ -1,6 +1,7 @@
 package edu.cqie.paiclidemo.agent;
 
 import edu.cqie.paiclidemo.llm.LlmClient;
+import edu.cqie.paiclidemo.memory.MemoryManager;
 import edu.cqie.paiclidemo.plan.ExecutionPlan;
 import edu.cqie.paiclidemo.plan.Planner;
 import edu.cqie.paiclidemo.plan.Task;
@@ -52,23 +53,32 @@ public class PlanExecuteAgent {
     private final ToolRegistry toolRegistry;
     private final Planner planner;
     private final Scanner scanner;  // 用于规划后与用户确认（null = 跳过确认，直接执行）
+    private final MemoryManager memoryManager;  // 可选，null = 无记忆
 
     /**
-     * 交互式构造：传入 Scanner 用于规划后确认。
-     * 适用于 CLI 场景，用户可以看到计划并决定是否修改。
+     * 完整构造：传入 Scanner 用于规划后确认 + MemoryManager 用于记忆。
      */
-    public PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry, Scanner scanner) {
+    public PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry,
+                            Scanner scanner, MemoryManager memoryManager) {
         this.llmClient = llmClient;
         this.toolRegistry = toolRegistry;
         this.planner = new Planner(llmClient);
         this.scanner = scanner;
+        this.memoryManager = memoryManager;
+    }
+
+    /**
+     * 交互式构造：传入 Scanner 用于规划后确认（无记忆功能）。
+     */
+    public PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry, Scanner scanner) {
+        this(llmClient, toolRegistry, scanner, null);
     }
 
     /**
      * 非交互式构造：跳过规划确认，直接执行（向后兼容，适用于测试）。
      */
     public PlanExecuteAgent(LlmClient llmClient, ToolRegistry toolRegistry) {
-        this(llmClient, toolRegistry, null);
+        this(llmClient, toolRegistry, null, null);
     }
 
     // ==================== 核心方法：规划 + 执行 ====================
@@ -293,13 +303,21 @@ public class PlanExecuteAgent {
     /**
      * 构建单任务的系统提示词。
      * <p>
-     * 包含：当前任务信息 + 前序任务的执行结果（作为上下文）。
+     * 包含：当前任务信息 + 前序任务的执行结果 + 相关长期记忆（作为上下文）。
      */
     private String buildTaskPrompt(Task task, ExecutionPlan plan) {
         StringBuilder sb = new StringBuilder();
         sb.append("你是一个任务执行者。请完成以下任务。\n\n");
         sb.append("当前任务: ").append(task.getDescription()).append("\n");
         sb.append("任务类型: ").append(task.getType()).append("\n\n");
+
+        // 注入长期记忆上下文
+        if (memoryManager != null) {
+            String memoryContext = memoryManager.buildMemoryContext(task.getDescription(), 300);
+            if (!memoryContext.isBlank()) {
+                sb.append(memoryContext);
+            }
+        }
 
         // 注入前序任务的结果
         if (!task.getDependencies().isEmpty()) {

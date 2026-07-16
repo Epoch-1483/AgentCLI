@@ -36,6 +36,8 @@ Thumbs.db
 *.iws
 *.iml
 *.ipr
+# IntelliJ 目录元数据（有时会跑到项目根目录，需显式忽略）
+DirectoryV3.xml
 
 ### NetBeans ###
 /nbproject/private/

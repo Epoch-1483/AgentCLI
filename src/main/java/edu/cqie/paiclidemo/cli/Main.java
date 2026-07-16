@@ -4,6 +4,7 @@ import edu.cqie.paiclidemo.agent.Agent;
 import edu.cqie.paiclidemo.agent.PlanExecuteAgent;
 import edu.cqie.paiclidemo.llm.GLMClient;
 import edu.cqie.paiclidemo.llm.LlmClient;
+import edu.cqie.paiclidemo.memory.MemoryManager;
 import edu.cqie.paiclidemo.tool.ToolRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,25 +47,26 @@ public class Main {
 
         // ② 创建 LLM 客户端
         LlmClient llmClient = new GLMClient(apiKey);
-        System.out.println("PaiCLI-Demo v0.1 | 模型: " + llmClient.getModelName());
 
         // ③ 创建工具注册中心，注册示例工具
         ToolRegistry toolRegistry = createToolRegistry();
-        System.out.println("已注册 " + toolRegistry.getToolDefinitions().size() + " 个工具: "
-                + toolRegistry.getToolDefinitions().stream()
-                .map(LlmClient.Tool::name)
-                .toList());
 
-        // ④ 创建 Scanner（供 REPL 和 PlanExecuteAgent 共用）
+        // ④ 创建 MemoryManager（记忆系统）
+        MemoryManager memoryManager = new MemoryManager(llmClient);
+
+        // ⑤ 创建 Scanner（供 REPL 和 PlanExecuteAgent 共用）
         Scanner scanner = new Scanner(System.in);
 
-        // ⑤ 创建 Agent（两种模式）
-        Agent agent = new Agent(llmClient, toolRegistry);           // ReAct 模式
-        PlanExecuteAgent planAgent = new PlanExecuteAgent(llmClient, toolRegistry, scanner);  // Plan-and-Execute 模式（含规划确认）
+        // ⑥ 创建 Agent（两种模式，都接入 Memory）
+        Agent agent = new Agent(llmClient, toolRegistry, memoryManager);           // ReAct 模式（含记忆）
+        PlanExecuteAgent planAgent = new PlanExecuteAgent(llmClient, toolRegistry, scanner, memoryManager);  // Plan-and-Execute 模式（含记忆）
 
-        // ⑥ 进入 REPL 交互循环
-        System.out.println("\n输入你的问题（输入 quit 退出，clear 清空历史，/plan 进入规划模式）：");
-        System.out.println("─".repeat(50));
+        // ⑦ 显示启动横幅 + 进入 REPL 交互循环
+        Banner.display(
+                llmClient.getModelName(),
+                toolRegistry.getToolDefinitions().size(),
+                true
+        );
 
         while (true) {
             System.out.print("\n> ");
@@ -77,12 +79,18 @@ public class Main {
                 continue;
             }
             if ("quit".equalsIgnoreCase(input) || "exit".equalsIgnoreCase(input)) {
+                // 退出前提取事实到长期记忆
+                try {
+                    memoryManager.extractFactsFromConversation();
+                } catch (Exception e) {
+                    log.warn("退出时事实提取失败: {}", e.getMessage());
+                }
                 System.out.println("再见！");
                 break;
             }
             if ("clear".equalsIgnoreCase(input)) {
-                agent.clearHistory();
-                System.out.println("[对话历史已清空]");
+                agent.clearHistory();  // 会先提取事实到长期记忆再清空
+                System.out.println("[对话历史已清空，长期记忆已保留]");
                 continue;
             }
 
@@ -104,6 +112,12 @@ public class Main {
                 continue;
             }
 
+            // /memory 命令 → 记忆管理
+            if (input.startsWith("/memory")) {
+                handleMemoryCommand(input, memoryManager);
+                continue;
+            }
+
             try {
                 String response = agent.run(input); // Agent 处理用户输入
                 System.out.println("\n" + response);
@@ -112,6 +126,101 @@ public class Main {
                 log.error("Agent 执行异常", e);
             }
         }
+    }
+
+    // ==================== 记忆管理命令 ====================
+
+    /**
+     * 处理 /memory 子命令。
+     * <p>
+     * 支持的命令：
+     * - /memory status → 查看记忆系统状态
+     * - /memory facts → 查看所有长期记忆
+     * - /memory clear short → 清空短期记忆
+     * - /memory clear long → 清空长期记忆
+     * - /memory extract → 手动从当前对话中提取事实
+     */
+    private static void handleMemoryCommand(String input, MemoryManager memoryManager) {
+        String args = input.substring(7).trim();
+
+        if (args.isEmpty() || "status".equalsIgnoreCase(args)) {
+            System.out.println("\n📊 记忆系统状态:");
+            System.out.println(memoryManager.getSystemStatus());
+            return;
+        }
+
+        if ("facts".equalsIgnoreCase(args)) {
+            var facts = memoryManager.listLongTerm();
+            if (facts.isEmpty()) {
+                System.out.println("长期记忆为空。");
+            } else {
+                System.out.println("\n📝 长期记忆 (" + facts.size() + " 条):");
+                for (var fact : facts) {
+                    System.out.println("  " + fact);
+                }
+            }
+            return;
+        }
+
+        if ("extract".equalsIgnoreCase(args)) {
+            try {
+                var extracted = memoryManager.extractFactsFromConversation();
+                if (extracted.isEmpty()) {
+                    System.out.println("未从当前对话中提取到关键事实。");
+                } else {
+                    System.out.println("\n🧠 提取了 " + extracted.size() + " 条事实:");
+                    for (String fact : extracted) {
+                        System.out.println("  - " + fact);
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("事实提取失败: " + e.getMessage());
+            }
+            return;
+        }
+
+        if (args.startsWith("clear")) {
+            String target = args.substring(5).trim();
+            if ("short".equalsIgnoreCase(target)) {
+                memoryManager.clearShortTerm();
+                System.out.println("短期记忆已清空。");
+            } else if ("long".equalsIgnoreCase(target)) {
+                memoryManager.clearLongTerm();
+                System.out.println("长期记忆已清空。");
+            } else {
+                System.out.println("用法: /memory clear short | /memory clear long");
+            }
+            return;
+        }
+
+        if (args.startsWith("search")) {
+            String query = args.substring(6).trim();
+            if (query.isEmpty()) {
+                System.out.println("用法: /memory search <查询关键词>");
+                return;
+            }
+            var scored = memoryManager.retrieveScored(query, 10);
+            if (scored.isEmpty()) {
+                System.out.println("未找到与 \"" + query + "\" 相关的记忆。");
+            } else {
+                System.out.printf("%n🔍 检索 \"%s\"，命中 %d 条记忆:%n", query, scored.size());
+                System.out.println("─".repeat(60));
+                for (int i = 0; i < scored.size(); i++) {
+                    var se = scored.get(i);
+                    String source = se.fromShortTerm() ? "短期" : "长期";
+                    String content = se.entry().getContent();
+                    if (content.length() > 60) content = content.substring(0, 60) + "...";
+                    System.out.printf("  #%d [%.2f] %s (%s)%n",
+                            i + 1, se.score(), source, se.entry().getType());
+                    System.out.printf("       关键词=%.2f  时间衰减=%.2f  来源加权=%.1f%n",
+                            se.keywordScore(), se.timeDecay(), se.sourceWeight());
+                    System.out.printf("       %s%n", content);
+                }
+            }
+            return;
+        }
+
+        System.out.println("未知命令。可用: /memory status, /memory facts, /memory search <关键词>, /memory extract, /memory clear short|long");
     }
 
     // ==================== 工具注册 ====================
