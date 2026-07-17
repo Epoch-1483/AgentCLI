@@ -14,11 +14,12 @@ package edu.cqie.paiclidemo.cli;
  *  │      ██  ██     PaiCLI Demo  v0.1           │
  *  │      ██  ██     智谱 AI 代理                │
  *  │      ██  ██     Model: glm-5-flash          │
- *  │      ██  ██     5 tools · Memory ✓ · RAG ✗ │
+ *  │      ██  ██     5 tools · Memory ✓ · RAG ✗ · HITL ✓│
  *  │                                             │
  *  │  ─────────────────────────────────────────  │
  *  │  输入 quit 退出 · clear 清空 · /plan 规划    │
- *  │  /memory 管理记忆 · /index /search /graph RAG│
+ *  │  /team 多Agent协作 · /memory 管理记忆        │
+ *  │  /hitl 人工审批开关 · /index /search /graph  │
  *  ╰─────────────────────────────────────────────╯
  * </pre>
  *
@@ -64,12 +65,14 @@ public class Banner {
     /**
      * 打印启动横幅到标准输出。
      *
-     * @param modelName 当前使用的模型名称（如 "glm-5-flash"）
-     * @param toolCount 已注册工具数量
-     * @param hasMemory 是否启用了记忆系统
-     * @param ragReady  RAG 索引是否就绪（已有向量数据）
+     * @param modelName     当前使用的模型名称（如 "glm-5-flash"）
+     * @param toolCount     已注册工具数量
+     * @param hasMemory     是否启用了记忆系统
+     * @param ragReady      RAG 索引是否就绪（已有向量数据）
+     * @param hitlEnabled   是否启用了 HITL 人工审批
      */
-    public static void display(String modelName, int toolCount, boolean hasMemory, boolean ragReady) {
+    public static void display(String modelName, int toolCount, boolean hasMemory,
+                                boolean ragReady, boolean hitlEnabled) {
         // 右侧信息面板（与 π 图形的第 1~4 行对齐）
         String[] info = {
                 WHITE + " PaiCLI Demo" + RESET + GRAY + "  v0.1" + RESET,
@@ -79,7 +82,9 @@ public class Banner {
                         + GRAY + " · Memory " + RESET
                         + GREEN + (hasMemory ? "✓" : "✗") + RESET
                         + GRAY + " · RAG " + RESET
-                        + GREEN + (ragReady ? "✓" : "✗") + RESET,
+                        + GREEN + (ragReady ? "✓" : "✗") + RESET
+                        + GRAY + " · HITL " + RESET
+                        + GREEN + (hitlEnabled ? "✓" : "✗") + RESET,
         };
 
         // ── 顶部边框 ──
@@ -114,8 +119,8 @@ public class Banner {
                 + RESET + " ".repeat(4) + "│");
         line("│  " + GRAY + "/team 多Agent协作 · /memory 管理记忆"
                 + RESET + " ".repeat(12) + "│");
-        line("│  " + GRAY + "/index /search /graph RAG 代码检索"
-                + RESET + " ".repeat(13) + "│");
+        line("│  " + GRAY + "/hitl 人工审批开关 · /index /search /graph RAG"
+                + RESET + " ".repeat(3) + "│");
 
         // ── 底部边框 ──
         line("╰" + "─".repeat(50) + "╯");

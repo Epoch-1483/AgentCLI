@@ -4,6 +4,8 @@ import edu.cqie.paiclidemo.agent.Agent;
 import edu.cqie.paiclidemo.agent.AgentOrchestrator;
 import edu.cqie.paiclidemo.agent.PlanExecuteAgent;
 import edu.cqie.paiclidemo.config.DotEnv;
+import edu.cqie.paiclidemo.hitl.HitlToolRegistry;
+import edu.cqie.paiclidemo.hitl.TerminalHitlHandler;
 import edu.cqie.paiclidemo.llm.GLMClient;
 import edu.cqie.paiclidemo.llm.LlmClient;
 import edu.cqie.paiclidemo.memory.MemoryManager;
@@ -57,8 +59,9 @@ public class Main {
         // ② 创建 LLM 客户端
         LlmClient llmClient = new GLMClient(apiKey);
 
-        // ③ 创建工具注册中心，注册示例工具
-        ToolRegistry toolRegistry = createToolRegistry();
+        // ③ 创建 HITL 处理器和工具注册中心
+        TerminalHitlHandler hitlHandler = new TerminalHitlHandler();
+        HitlToolRegistry toolRegistry = createToolRegistry(hitlHandler);
 
         // ④ 创建 MemoryManager（记忆系统）
         MemoryManager memoryManager = new MemoryManager(llmClient);
@@ -79,7 +82,8 @@ public class Main {
                 llmClient.getModelName(),
                 toolRegistry.getToolDefinitions().size(),
                 true,
-                ragReady
+                ragReady,
+                hitlHandler.isEnabled()
         );
 
         while (true) {
@@ -166,6 +170,12 @@ public class Main {
                     System.err.println("\nMulti-Agent 执行出错: " + e.getMessage());
                     log.error("AgentOrchestrator 异常", e);
                 }
+                continue;
+            }
+
+            // /hitl 命令 → 人工审批开关
+            if (input.startsWith("/hitl")) {
+                handleHitlCommand(input, hitlHandler);
                 continue;
             }
 
@@ -387,6 +397,49 @@ public class Main {
         }
     }
 
+    // ==================== HITL 命令 ====================
+
+    /**
+     * 处理 /hitl 子命令。
+     * <p>
+     * 支持的命令：
+     * - /hitl 或 /hitl status → 查看 HITL 当前状态
+     * - /hitl on → 启用人工审批
+     * - /hitl off → 关闭人工审批（同时清除"全部批准"缓存）
+     * - /hitl clear → 仅清除"全部批准"缓存
+     */
+    private static void handleHitlCommand(String input, TerminalHitlHandler hitlHandler) {
+        String args = input.substring(5).trim();
+
+        if (args.isEmpty() || "status".equalsIgnoreCase(args)) {
+            System.out.println("\n🛡️ HITL 人工审批状态:");
+            System.out.println("  开关: " + (hitlHandler.isEnabled() ? "✅ 已启用" : "❌ 已关闭"));
+            System.out.println("  拦截范围: write_file, execute_command, create_project, mcp__* 工具");
+            System.out.println("  操作: [y] 批准  [a] 全部批准  [n] 拒绝  [s] 跳过");
+            return;
+        }
+
+        if ("on".equalsIgnoreCase(args)) {
+            hitlHandler.setEnabled(true);
+            System.out.println("🛡️ HITL 已启用 —— 危险工具调用前将弹出审批确认");
+            return;
+        }
+
+        if ("off".equalsIgnoreCase(args)) {
+            hitlHandler.setEnabled(false);
+            System.out.println("⚠️ HITL 已关闭 —— 所有工具调用将直接执行，不再审批");
+            return;
+        }
+
+        if ("clear".equalsIgnoreCase(args)) {
+            hitlHandler.clearApprovedAll();
+            System.out.println("🔄 \"全部批准\"缓存已清除");
+            return;
+        }
+
+        System.out.println("用法: /hitl [status|on|off|clear]");
+    }
+
     // ==================== RAG 状态检测 ====================
 
     /**
@@ -407,13 +460,15 @@ public class Main {
     // ==================== 工具注册 ====================
 
     /**
-     * 创建并配置工具注册中心。
+     * 创建并配置工具注册中心（HITL 增强版）。
      * <p>
-     * 注册了 2 个示例工具，展示如何定义工具的 JSON Schema 和执行逻辑。
-     * 你可以通过 toolRegistry.register() 添加更多工具。
+     * 使用 {@link HitlToolRegistry} 替代普通 ToolRegistry，
+     * 在危险工具执行前自动触发人工审批。
+     * <p>
+     * 注册了 2 个示例工具 + RAG 工具，展示如何定义工具的 JSON Schema 和执行逻辑。
      */
-    private static ToolRegistry createToolRegistry() {
-        ToolRegistry registry = new ToolRegistry();
+    private static HitlToolRegistry createToolRegistry(TerminalHitlHandler hitlHandler) {
+        HitlToolRegistry registry = new HitlToolRegistry(hitlHandler);
 
         // 工具 1：计算器 —— 安全地计算数学表达式
         registry.register(

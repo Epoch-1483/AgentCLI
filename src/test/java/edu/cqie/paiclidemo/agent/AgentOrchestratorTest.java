@@ -453,15 +453,16 @@ class AgentOrchestratorTest {
                     """);
 
             // 并行批次：step_1 和 step_2 各有 Worker + 独立 Reviewer = 4 次 LLM 调用
-            // （并行执行时队列消费顺序不确定，所以用通用响应）
-            mockLlm.enqueueText("今天晴天，25°C");           // Worker 执行
-            mockLlm.enqueueText("""
-                    {"approved": true, "summary": "通过"}
-                    """);                                     // Reviewer 审查
-            mockLlm.enqueueText("A股涨 2%，美股跌 1%");      // Worker 执行
-            mockLlm.enqueueText("""
-                    {"approved": true, "summary": "通过"}
-                    """);                                     // Reviewer 审查
+            // 【关键】并行执行时 Worker/Reviewer 消费队列顺序不确定，
+            // 必须用统一格式的响应，确保无论哪个角色消费到都能正常通过：
+            //   - Worker 拿到 → 作为文本结果返回（非空，审查时会进入 parseReviewApproval）
+            //   - Reviewer 拿到 → JSON 解析 approved=true，直接通过
+            // 避免 Worker 拿到审查响应、Reviewer 拿到 Worker 响应导致审查失败 + 重试。
+            for (int i = 0; i < 4; i++) {
+                mockLlm.enqueueText("""
+                        {"approved": true, "summary": "通过"}
+                        """);
+            }
 
             // 串行路径：step_3（Worker + 共享 Reviewer）= 2 次 LLM 调用
             mockLlm.enqueueText("今日综合：天气晴好 25°C，A股上涨 2%");
