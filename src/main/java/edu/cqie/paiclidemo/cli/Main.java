@@ -1,6 +1,7 @@
 package edu.cqie.paiclidemo.cli;
 
 import edu.cqie.paiclidemo.agent.Agent;
+import edu.cqie.paiclidemo.agent.AgentOrchestrator;
 import edu.cqie.paiclidemo.agent.PlanExecuteAgent;
 import edu.cqie.paiclidemo.config.DotEnv;
 import edu.cqie.paiclidemo.llm.GLMClient;
@@ -65,9 +66,10 @@ public class Main {
         // ⑤ 创建 Scanner（供 REPL 和 PlanExecuteAgent 共用）
         Scanner scanner = new Scanner(System.in);
 
-        // ⑥ 创建 Agent（两种模式，都接入 Memory）
+        // ⑥ 创建 Agent（三种模式，都接入 Memory）
         Agent agent = new Agent(llmClient, toolRegistry, memoryManager);           // ReAct 模式（含记忆）
         PlanExecuteAgent planAgent = new PlanExecuteAgent(llmClient, toolRegistry, scanner, memoryManager);  // Plan-and-Execute 模式（含记忆）
+        AgentOrchestrator orchestrator = new AgentOrchestrator(llmClient, toolRegistry, memoryManager);  // Multi-Agent 模式
 
         // ⑦ 检测 RAG 索引状态
         boolean ragReady = checkRagReady();
@@ -145,6 +147,25 @@ public class Main {
             // /graph 命令 → 查询代码关系图谱（RAG）
             if (input.startsWith("/graph")) {
                 handleGraphCommand(input, toolRegistry);
+                continue;
+            }
+
+            // /team 命令 → Multi-Agent 协作模式
+            if (input.startsWith("/team")) {
+                String task = input.substring(5).trim();
+                if (task.isEmpty()) {
+                    System.out.println("用法: /team <任务描述>");
+                    System.out.println("示例: /team 帮我分析 2 的 10 次方是多少，然后验证结果");
+                    System.out.println("Multi-Agent 团队：1 个规划者 + 2 个执行者 + 1 个检查者");
+                    continue;
+                }
+                try {
+                    String response = orchestrator.run(task);
+                    System.out.println("\n" + response);
+                } catch (Exception e) {
+                    System.err.println("\nMulti-Agent 执行出错: " + e.getMessage());
+                    log.error("AgentOrchestrator 异常", e);
+                }
                 continue;
             }
 

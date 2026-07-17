@@ -17,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * 覆盖 extends / implements / contains / calls / imports 五种关系提取，
  * 以及解析失败和空文件的边界场景。
  *
- * @author Fonzer
+ * @author Fonzo
  * @date 2026/07/16
  */
 class CodeAnalyzerTest {

@@ -46,7 +46,7 @@ import java.util.Map;
  *   String provider = DotEnv.get("EMBEDDING_PROVIDER", "ollama");
  * </pre>
  *
- * @author Fonzer
+ * @author Fonzo
  * @date 2026/07/16
  */
 public final class DotEnv {

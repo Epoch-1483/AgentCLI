@@ -2,9 +2,10 @@ package edu.cqie.paiclidemo;
 
 import edu.cqie.paiclidemo.llm.LlmClient;
 
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Queue;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * LlmClient 的 Mock 实现 —— 用于单元测试。
@@ -23,8 +24,8 @@ import java.util.Queue;
  */
 public class MockLlmClient implements LlmClient {
 
-    private final Queue<ChatResponse> responses = new LinkedList<>();
-    private int callCount = 0;
+    private final Queue<ChatResponse> responses = new ConcurrentLinkedQueue<>();
+    private final AtomicInteger callCount = new AtomicInteger(0);
 
     /** 排入一个响应，chat() 按 FIFO 顺序消费 */
     public void enqueue(ChatResponse response) {
@@ -48,22 +49,22 @@ public class MockLlmClient implements LlmClient {
 
     /** 获取 chat() 被调用的次数 */
     public int getCallCount() {
-        return callCount;
+        return callCount.get();
     }
 
     /** 重置计数器（不清空队列） */
     public void resetCallCount() {
-        callCount = 0;
+        callCount.set(0);
     }
 
     @Override
     public ChatResponse chat(List<Message> messages, List<Tool> tools) {
-        callCount++;
+        int count = callCount.incrementAndGet();
         ChatResponse response = responses.poll();
         if (response == null) {
             throw new IllegalStateException(
-                    "MockLlmClient: 队列已空！chat() 被调用了 " + callCount
-                            + " 次，但只排入了 " + (callCount - 1) + " 个响应。"
+                    "MockLlmClient: 队列已空！chat() 被调用了 " + count
+                            + " 次，但只排入了 " + (count - 1) + " 个响应。"
                             + "请检查测试用例是否少排了 enqueue。");
         }
         return response;

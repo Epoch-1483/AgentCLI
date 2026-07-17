@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * <p>
  * 覆盖 .env 文件解析、引号去除、注释/空行跳过、不存在文件处理等场景。
  *
- * @author Fonzer
+ * @author Fonzo
  * @date 2026/07/16
  */
 class DotEnvTest {

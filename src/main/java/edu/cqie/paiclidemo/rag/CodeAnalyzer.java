@@ -38,7 +38,7 @@ import java.util.Optional;
  * 不做完整的类型解析（JavaParser 需要 symbol solver 才能做到精确解析）。
  * 对于 Demo 项目来说这已经足够展示关系图谱了。
  *
- * @author Fonzer
+ * @author Fonzo
  * @date 2026/07/16
  */
 public class CodeAnalyzer {

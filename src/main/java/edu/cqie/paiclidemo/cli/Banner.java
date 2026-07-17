@@ -112,8 +112,10 @@ public class Banner {
         // ── 使用提示 ──
         line("│  " + GRAY + "输入 quit 退出 · clear 清空 · /plan 规划模式"
                 + RESET + " ".repeat(4) + "│");
-        line("│  " + GRAY + "/memory 管理记忆 · /index /search /graph RAG"
-                + RESET + " ".repeat(5) + "│");
+        line("│  " + GRAY + "/team 多Agent协作 · /memory 管理记忆"
+                + RESET + " ".repeat(12) + "│");
+        line("│  " + GRAY + "/index /search /graph RAG 代码检索"
+                + RESET + " ".repeat(13) + "│");
 
         // ── 底部边框 ──
         line("╰" + "─".repeat(50) + "╯");
